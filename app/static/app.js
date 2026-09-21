@@ -18,12 +18,18 @@ const captureCtx = captureCanvas.getContext("2d", { willReadFrequently: false })
 const state = {
   running: false,
   inFlight: false, // hard limit: at most one inference request at a time
+  generation: 0, // bumped on every Start and Stop; orphans stale in-flight results
   stream: null,
   tickTimer: null,
   lastTickAt: 0,
   intervalMs: 1000 / 3, // updated from /api/info demo_fps
   roundTrips: [], // recent end-to-end ms, for the stats line
 };
+
+// A response may only touch UI state if it belongs to the current session.
+function sessionStillActive(generation) {
+  return state.running && generation === state.generation;
+}
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -46,7 +52,7 @@ function updateStats(roundTripMs, inferenceMs) {
 
 // Draw boxes scaled from the submitted frame's pixel space to the overlay canvas.
 function drawDetections(data) {
-  if (!state.running) return; // stale response after Stop: ignore
+  if (!state.running) return; // defensive: drawDetections is also guarded by sessionStillActive
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -76,6 +82,7 @@ function drawDetections(data) {
 }
 
 async function sendFrame() {
+  const generation = state.generation; // this frame belongs to this session
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
@@ -87,6 +94,9 @@ async function sendFrame() {
   const blob = await new Promise((resolve) =>
     captureCanvas.toBlob(resolve, "image/jpeg", 0.7)
   );
+  // toBlob() is async: a Stop can land while encoding. Check the session
+  // before doing anything else with this frame, including status updates.
+  if (!sessionStillActive(generation)) return;
   if (!blob) {
     showError("Could not encode camera frame to JPEG.");
     return;
@@ -112,10 +122,14 @@ async function sendFrame() {
     }
     const data = await resp.json();
     const roundTrip = performance.now() - t0;
+    // Stale response (Stop pressed, or a new session started since this
+    // request began): it must not touch status, stats, or the overlay.
+    if (!sessionStillActive(generation)) return;
     updateStats(roundTrip, data.inference_ms);
     drawDetections(data);
     setStatus("Detecting");
   } catch (err) {
+    if (!sessionStillActive(generation)) return;
     showError(err.message || String(err));
     setStatus("Error — see message below");
   }
@@ -183,6 +197,7 @@ async function startDetection() {
     return;
   }
   state.running = true;
+  state.generation += 1; // new session: invalidate any earlier in-flight work
   state.lastTickAt = 0;
   startBtn.disabled = true;
   stopBtn.disabled = false;
@@ -192,6 +207,7 @@ async function startDetection() {
 
 function stopDetection() {
   state.running = false;
+  state.generation += 1; // any in-flight response is now stale
   clearTimeout(state.tickTimer);
   if (state.stream) {
     for (const track of state.stream.getTracks()) track.stop();

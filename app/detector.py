@@ -115,9 +115,16 @@ class YoloDetector:
         logger.info("Detector warm-up complete (%d iterations)", iterations)
 
     def detect(self, image: np.ndarray) -> DetectionResult:
+        """Infer on one RGB (H, W, 3) uint8 image.
+
+        The detector contract is RGB; Ultralytics expects OpenCV-style BGR for
+        numpy inputs and flips channels itself, so the RGB -> BGR conversion
+        happens exactly once, here, at the Ultralytics boundary.
+        """
         start = time.perf_counter()
+        bgr = np.ascontiguousarray(image[..., ::-1])
         results = self._model.predict(
-            image,
+            bgr,
             imgsz=self.imgsz,
             conf=self.conf,
             device=self.device,

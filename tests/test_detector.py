@@ -58,3 +58,77 @@ def test_result_structure():
     assert r.image_height == 480
     assert r.inference_ms == 42.0
     assert r.detections == ()
+
+
+# ---------------------------------------------------------------------------
+# RGB -> BGR boundary regression (Finding 1)
+#
+# The detector contract is RGB; Ultralytics assumes OpenCV-style BGR for
+# numpy HWC input and flips channels internally. The flip must happen exactly
+# once, at the Ultralytics boundary, so a red pixel must reach predict() as
+# blue. This test fakes the model (no weights, no download) and inspects the
+# exact array handed to predict().
+# ---------------------------------------------------------------------------
+
+
+class _FakeBoxes:
+    pass
+
+
+class _FakeResult:
+    def __init__(self):
+        self.boxes = None  # no detections
+
+
+class _FakeUltralyticsModel:
+    """Stands in for YOLO(); records every array passed to predict()."""
+
+    names = {0: "person"}
+
+    def __init__(self):
+        self.predicted_inputs = []
+
+    def predict(self, image, **kwargs):
+        self.predicted_inputs.append(np.asarray(image))
+        return [_FakeResult()]
+
+
+def _yolo_detector_with_fake_model(fake_model):
+    """Build a YoloDetector without loading real weights (skips __init__)."""
+    from app.detector import YoloDetector
+
+    det = YoloDetector.__new__(YoloDetector)
+    det._model = fake_model
+    det.model_name = "fake.pt"
+    det.device = "cpu"
+    det.imgsz = 640
+    det.conf = 0.25
+    det._names = {0: "person"}
+    return det
+
+
+def test_detect_converts_rgb_to_bgr_at_ultralytics_boundary():
+    fake_model = _FakeUltralyticsModel()
+    det = _yolo_detector_with_fake_model(fake_model)
+
+    rgb = np.zeros((4, 6, 3), dtype=np.uint8)
+    rgb[..., 0] = 10  # R
+    rgb[..., 1] = 20  # G
+    rgb[..., 2] = 30  # B
+
+    result = det.detect(rgb)
+
+    assert len(fake_model.predicted_inputs) == 1
+    sent = fake_model.predicted_inputs[0]
+    assert sent.shape == (4, 6, 3)
+    assert sent.dtype == np.uint8
+    # Channel order at the model boundary must be B, G, R:
+    assert sent[0, 0, 0] == 30, "channel 0 must be blue (B)"
+    assert sent[0, 0, 1] == 20, "channel 1 must be green (G)"
+    assert sent[0, 0, 2] == 10, "channel 2 must be red (R)"
+    assert sent.flags["C_CONTIGUOUS"], "model input should be contiguous"
+    # The RGB input array must not be mutated in place.
+    assert rgb[0, 0, 0] == 10 and rgb[0, 0, 1] == 20 and rgb[0, 0, 2] == 30
+    # Mapping still works with the faked (empty) boxes.
+    assert result.detections == ()
+    assert (result.image_width, result.image_height) == (6, 4)

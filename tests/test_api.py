@@ -1,6 +1,8 @@
 """API tests using a stub detector: fast, deterministic, no model download."""
 
 import io
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -199,3 +201,97 @@ def test_startup_fails_clearly_when_model_cannot_load(monkeypatch):
     with pytest.raises(RuntimeError, match="simulated model load failure"):
         with TestClient(app):
             pass
+
+
+# ---------------------------------------------------------------------------
+# Event-loop / concurrency regressions (Finding 3)
+#
+# CPU inference is synchronous and slow; it must run off the asyncio event
+# loop (so /api/health stays responsive) and at most one inference may be
+# active at a time (single loaded model, no unbounded queue).
+# ---------------------------------------------------------------------------
+
+
+class SlowTrackingDetector(FakeDetector):
+    """Fake detector that blocks a worker thread for ``delay`` seconds and
+    records how many calls are active concurrently."""
+
+    def __init__(self, delay: float = 0.5) -> None:
+        super().__init__()
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+        self.became_active = threading.Event()
+
+    def detect(self, image: np.ndarray) -> DetectionResult:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        if self.active >= 1:
+            self.became_active.set()
+        try:
+            time.sleep(self.delay)
+        finally:
+            self.active -= 1
+            if self.active == 0:
+                self.became_active.clear()
+        return super().detect(image)
+
+
+def test_health_is_responsive_while_inference_runs():
+    """A slow synchronous detector must not block the event loop: /api/health
+    answers quickly even while a full inference is in flight."""
+    det = SlowTrackingDetector(delay=0.8)
+    app = create_app(Settings(), detector=det)
+    with TestClient(app) as client:
+
+        def run_detect():
+            return client.post(
+                "/api/detect", content=make_jpeg(), headers={"Content-Type": "image/jpeg"}
+            )
+
+        worker = threading.Thread(target=run_detect)
+        worker.start()
+        try:
+            assert det.became_active.wait(timeout=5), "detector never became active"
+            t0 = time.perf_counter()
+            resp = client.get("/api/health")
+            health_ms = (time.perf_counter() - t0) * 1000.0
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "ok"}
+            # If the event loop were blocked, this would take ~800 ms (the full
+            # detector sleep). Generous margin keeps the test deterministic.
+            assert health_ms < 400, (
+                f"/api/health took {health_ms:.0f} ms while inference ran; "
+                "event loop appears blocked"
+            )
+        finally:
+            worker.join(timeout=10)
+            assert not worker.is_alive()
+
+
+def test_inference_is_bounded_to_one_concurrent_call():
+    """Concurrent /api/detect requests may wait, but model inference itself
+    must never run in parallel on this baseline."""
+    det = SlowTrackingDetector(delay=0.15)
+    app = create_app(Settings(), detector=det)
+    with TestClient(app) as client:
+        failures = []
+
+        def run_detect():
+            try:
+                resp = client.post(
+                    "/api/detect", content=make_jpeg(), headers={"Content-Type": "image/jpeg"}
+                )
+                assert resp.status_code == 200
+            except AssertionError as exc:
+                failures.append(exc)
+
+        threads = [threading.Thread(target=run_detect) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert all(not t.is_alive() for t in threads), "detect requests did not finish"
+        assert not failures
+        assert det.calls == 4
+        assert det.max_active == 1, f"inference ran concurrently (max_active={det.max_active})"
