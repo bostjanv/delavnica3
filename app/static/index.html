@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CPU YOLO Browser Demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1>CPU YOLO Browser Demo</h1>
+    <p class="hint">
+      Point the camera at ordinary objects (people, cars, bicycles, animals,
+      furniture) and press <em>Start Detection</em>.
+    </p>
+
+    <div class="stage" id="stage">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div id="cam-placeholder" class="placeholder">Camera preview will appear here</div>
+    </div>
+
+    <div class="controls">
+      <button id="start-btn">Start Detection</button>
+      <button id="stop-btn" disabled>Stop Detection</button>
+    </div>
+
+    <div id="status" class="status">Checking backend…</div>
+    <div id="error" class="error" hidden></div>
+    <div id="stats" class="stats">—</div>
+
+    <p class="fineprint">
+      Frames are sent only to this local service (<code>POST /api/detect</code>);
+      at most one inference request is in flight at a time and stale frames are
+      skipped, never queued.
+    </p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

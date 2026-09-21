@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model weights and exported inference artifacts (never commit; AGENTS.md)
+*.pt
+*.onnx
+*.engine
+*.xml
+*.bin
+runs/
+models/
