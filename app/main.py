@@ -6,6 +6,7 @@ application lifespan; if it cannot be initialized, startup fails clearly.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from contextlib import asynccontextmanager
@@ -79,6 +80,9 @@ def create_app(settings: Settings | None = None, detector: "Detector | None" = N
             except Exception:
                 logger.exception("Detector initialization failed; refusing to start")
                 raise  # fail startup clearly instead of pretending to be healthy
+        # One model, one inference at a time (CPU baseline). The semaphore is
+        # created in the async lifespan so it is bound to the running loop.
+        app.state.inference_semaphore = asyncio.Semaphore(1)
         app.state.settings = settings
         logger.info(
             "Service ready: model=%s device=%s imgsz=%d conf=%.2f listen=%s:%d",
@@ -138,13 +142,17 @@ def create_app(settings: Settings | None = None, detector: "Detector | None" = N
             logger.warning("Rejected undecodable frame (%d bytes)", len(body))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        try:
-            result = det.detect(image)
-        except Exception:
-            logger.exception("Inference failed")
-            raise HTTPException(
-                status_code=500, detail="inference failed on the server; see server logs"
-            ) from None
+        # Synchronous CPU inference runs in a worker thread (never on the event
+        # loop, so /api/health stays responsive), and at most one inference is
+        # active at a time (single loaded model, no unbounded queue).
+        async with app.state.inference_semaphore:
+            try:
+                result = await asyncio.to_thread(det.detect, image)
+            except Exception:
+                logger.exception("Inference failed")
+                raise HTTPException(
+                    status_code=500, detail="inference failed on the server; see server logs"
+                ) from None
 
         return DetectionResponse(
             image_width=result.image_width,

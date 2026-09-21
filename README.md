@@ -56,6 +56,16 @@ Browser overlay canvas (boxes, class labels, confidence)
   request is still running. Stale frames never queue up.
 - **Transport:** one HTTP `POST` per selected frame with a raw JPEG/PNG body;
   a stable JSON response with pixel coordinates.
+- **Inference execution:** synchronous CPU inference runs in a worker thread
+  (`asyncio.to_thread`), never on the asyncio event loop, so
+  `/api/health` stays responsive while a frame is being processed. An
+  application-scoped `asyncio.Semaphore(1)` intentionally bounds model
+  inference to **one concurrent call** (one process, one model); extra HTTP
+  requests simply wait.
+- **Color contract:** the detector abstraction takes RGB arrays throughout
+  the app. Ultralytics expects OpenCV-style BGR for numpy inputs, so the
+  RGB → BGR flip happens exactly once, at the Ultralytics boundary inside
+  `YoloDetector.detect()` (guarded by a regression test).
 
 ## Supported Environment
 
@@ -89,6 +99,10 @@ Browser overlay canvas (boxes, class labels, confidence)
 ├── scripts/
 │   └── benchmark.py   # local CPU latency/FPS measurement
 └── tests/             # pytest suite (stub detector; no model download)
+    ├── test_api.py        # API behavior + event-loop/concurrency regressions
+    ├── test_config.py     # configuration parsing
+    ├── test_detector.py   # mapping + RGB→BGR boundary regression
+    └── test_browser_session.py  # Stop/Start race (Playwright; skipped if not installed)
 ```
 
 ## Setup
@@ -105,6 +119,19 @@ python -m pip install -e ".[dev]"   # app + dev extras (pytest, httpx)
 
 The first run of anything that touches the model will download the pretrained
 weights (see below).
+
+### Tested dependency versions
+
+`pyproject.toml` declares only lower bounds, so a fresh install may receive
+newer packages than the ones the demo was verified with. The exact tested
+versions are recorded in [`requirements-tested.txt`](requirements-tested.txt)
+(Python 3.14.4; ultralytics 8.4.157; torch 2.14.0+cpu; fastapi 0.141.1;
+uvicorn 0.53.0; pillow 12.3.0; numpy 2.5.3; plus the verified transitive and
+test-tooling pins). To reproduce that exact environment, follow the
+reinstall commands at the top of that file — note that the CPU-only torch
+wheels (`+cpu`) must come from the PyTorch index, not PyPI.
+
+Compatibility with other versions is **not** claimed.
 
 ## Model Prefetch / Warm-up
 
@@ -247,6 +274,40 @@ Run shortly before the presentation, on the actual machine:
 - [ ] **Stop Detection**; request activity stops (watch server logs).
 - [ ] **Start Detection** again; still works.
 - [ ] Note the stats line (latency + detections/s) — this is your demo number.
+
+> **Physical webcam status:** the automated Stop/Start race regression test
+> (`tests/test_browser_session.py`) uses a synthetic camera in headless
+> Chromium. It passes in the development environment. Running the checklist
+> above on a physical webcam on the demo machine is still required before the
+> presentation — the execution environment has no camera hardware.
+
+## Browser regression test (optional)
+
+The Stop/Start race has an automated regression test:
+
+```bash
+pip install playwright        # dev-only; not a runtime dependency
+playwright install chromium   # one-time browser download
+python -m pytest tests/test_browser_session.py -q
+```
+
+It drives the real page with headless Chromium and a synthetic camera
+(`--use-fake-device-for-media-stream`) against a local mock server that can
+hold `/api/detect` responses, and covers two scenarios:
+
+1. **Stale response isolation** — a response from a stopped session cannot
+   change the status, update the stats, or draw boxes; an immediately
+   restarted session works normally.
+2. **Immediate Stop → Start while the old request is still outstanding** —
+   the new session must not send a second concurrent request, must not
+   busy-loop zero-delay timers, must stay logically active, and must resume
+   normal inference on its own once the stale request finishes (stale
+   response included).
+
+The test is skipped (not failed) when Playwright is not installed. The
+browser tooling used for verification is recorded in
+[`requirements-tested.txt`](requirements-tested.txt) (Playwright 1.63.0;
+Chromium 153 via `playwright install chromium`).
 
 ## Troubleshooting
 

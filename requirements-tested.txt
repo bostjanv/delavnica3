@@ -1,0 +1,41 @@
+# Tested dependency snapshot for the verified demo build (Work Order 002 + repair).
+#
+# Verified on: Ubuntu 26.04 (container), Python 3.14.4, 4-thread x86_64 CPU,
+# no GPU. Verification covered: full pytest suite (29 tests, incl. two real
+# Playwright browser-race tests), real yolo26n.pt CPU inference, server
+# responsiveness probe, and the benchmark below.
+#
+#   python scripts/benchmark.py          -> mean 215.3 ms / ~4.65 fps (imgsz 640, 640x480 frame)
+#   end-to-end HTTP                      -> mean 253.9 ms / ~3.94 fps
+#
+# Reinstall this exact environment:
+#
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   python -m pip install --upgrade pip
+#   # 1) CPU-only inference stack. The +cpu wheels do not exist on PyPI, so
+#   #    install them from the PyTorch CPU index first (exact versions:
+#   #    torch 2.14.0+cpu, torchvision 0.29.0+cpu):
+#   python -m pip install torch==2.14.0+cpu torchvision==0.29.0+cpu \
+#       --index-url https://download.pytorch.org/whl/cpu
+#   # 2) Everything else (torch/torchvision are intentionally NOT listed
+#   #    below so pip does not try to resolve +cpu local versions on PyPI):
+#   python -m pip install -r requirements-tested.txt
+
+# --- direct project dependencies (pyproject.toml) ---
+fastapi==0.141.1
+uvicorn==0.53.0
+ultralytics==8.4.157
+pillow==12.3.0
+numpy==2.5.3
+
+# --- behavior-relevant transitive dependencies ---
+pydantic==2.13.5
+starlette==1.6.0
+opencv-python==5.0.0.93
+
+# --- dev/test tooling ---
+pytest==9.1.1
+httpx==0.28.1
+playwright==1.63.0   # browser regression tests (tests/test_browser_session.py);
+                     # browsers still require:  playwright install chromium
