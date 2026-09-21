@@ -201,7 +201,16 @@ async function startDetection() {
   state.lastTickAt = 0;
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  scheduleTick();
+  // If the previous session's request is still in flight, do NOT schedule a
+  // tick now: the stale request owns state.inFlight, so this session cannot
+  // send, and with lastTickAt = 0 the scheduler would spin in zero-delay
+  // ticks until the stale request finishes. That request's finally() clears
+  // inFlight and calls scheduleTick(), which picks this session up
+  // automatically. (Resetting inFlight here instead would allow two
+  // simultaneous inference requests.)
+  if (!state.inFlight) {
+    scheduleTick();
+  }
   setStatus("Detecting");
 }
 

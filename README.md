@@ -293,10 +293,21 @@ python -m pytest tests/test_browser_session.py -q
 
 It drives the real page with headless Chromium and a synthetic camera
 (`--use-fake-device-for-media-stream`) against a local mock server that can
-hold a `/api/detect` response, and asserts that a response from a stopped
-session cannot change the status, update the stats, or draw boxes — and that
-an immediately restarted session works normally. The test is skipped (not
-failed) when Playwright is not installed.
+hold `/api/detect` responses, and covers two scenarios:
+
+1. **Stale response isolation** — a response from a stopped session cannot
+   change the status, update the stats, or draw boxes; an immediately
+   restarted session works normally.
+2. **Immediate Stop → Start while the old request is still outstanding** —
+   the new session must not send a second concurrent request, must not
+   busy-loop zero-delay timers, must stay logically active, and must resume
+   normal inference on its own once the stale request finishes (stale
+   response included).
+
+The test is skipped (not failed) when Playwright is not installed. The
+browser tooling used for verification is recorded in
+[`requirements-tested.txt`](requirements-tested.txt) (Playwright 1.63.0;
+Chromium 153 via `playwright install chromium`).
 
 ## Troubleshooting
 
